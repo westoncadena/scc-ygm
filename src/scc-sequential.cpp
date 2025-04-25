@@ -5,9 +5,10 @@
 #include <iomanip>
 
 std::vector<int> ecl_scc_sequential(int n,
-                                    std::map<int, std::vector<int>> &adj_list)
+                                    const std::vector<std::pair<int, int>> &edges)
 {
     std::vector<int> vin(n), vout(n);
+    std::vector<std::pair<int, int>> current_edges = edges;
 
     bool converged = false;
     while (!converged)
@@ -21,43 +22,37 @@ std::vector<int> ecl_scc_sequential(int n,
         while (updated)
         {
             updated = false;
-            // Iterate through the adjacency list
-            for (const auto &[u, neighbors] : adj_list)
+            // Iterate through all edges
+            for (const auto &[u, v] : current_edges)
             {
-                for (int w : neighbors)
+                // propagate max on outgoing paths (u_out ← max(u_out, v_out))
+                if (vout[u] < vout[v])
                 {
-                    // propagate max on outgoing paths
-                    if (vout[u] < vout[w])
-                    {
-                        vout[u] = vout[w];
-                        updated = true;
-                    }
+                    vout[u] = vout[v];
+                    updated = true;
+                }
 
-                    // propagate max on incoming paths
-                    if (vin[w] < vin[u])
-                    {
-                        vin[w] = vin[u];
-                        updated = true;
-                    }
+                // propagate max on incoming paths (v_in ← max(u_in, v_in))
+                if (vin[v] < vin[u])
+                {
+                    vin[v] = vin[u];
+                    updated = true;
                 }
             }
         }
 
         // remove edges that span SCCs
-        std::map<int, std::vector<int>> new_adj_list;
-
-        for (const auto &[u, neighbors] : adj_list)
+        std::vector<std::pair<int, int>> new_edges;
+        for (const auto &[u, v] : current_edges)
         {
-            for (int v : neighbors)
+            if (vin[u] == vin[v] && vout[u] == vout[v])
             {
-                if (vin[u] == vin[v] && vout[u] == vout[v])
-                {
-                    new_adj_list[u].push_back(v);
-                }
+                new_edges.emplace_back(u, v);
             }
         }
 
-        adj_list = new_adj_list;
+        // Update current edges
+        current_edges = new_edges;
 
         // check for global convergence
         converged = true;
@@ -72,43 +67,20 @@ std::vector<int> ecl_scc_sequential(int n,
     return vin;
 }
 
-std::map<int, std::vector<int>> figure3_edges()
+std::vector<std::pair<int, int>> figure3_edges()
 {
-    std::map<int, std::vector<int>> adj_list;
+    std::vector<std::pair<int, int>> edges = {
+        {2, 9}, {9, 0}, {0, 5}, {5, 1}, {3, 7}, {3, 11}, {7, 6}, {7, 4}, {6, 7}, {4, 10}, {10, 4}, {8, 3}, {8, 10}, {11, 8}, {11, 3}};
 
-    // chain
-    adj_list[2].push_back(9);
-    adj_list[9].push_back(0);
-    adj_list[0].push_back(5);
-    adj_list[5].push_back(1);
-
-    adj_list[3].push_back(7);
-    adj_list[3].push_back(11);
-
-    adj_list[7].push_back(6);
-    adj_list[7].push_back(4);
-
-    adj_list[6].push_back(7);
-
-    adj_list[4].push_back(10);
-
-    adj_list[10].push_back(4);
-
-    adj_list[8].push_back(3);
-    adj_list[8].push_back(10);
-
-    adj_list[11].push_back(8);
-    adj_list[11].push_back(3);
-
-    return adj_list;
+    return edges;
 }
 
 int main()
 {
     const int N = 12;
-    auto adj_list = figure3_edges();
+    auto edges = figure3_edges();
 
-    auto labels = ecl_scc_sequential(N, adj_list);
+    auto labels = ecl_scc_sequential(N, edges);
 
     std::cout << "Vertex : SCC‑label (vin)\n";
     for (int v = 0; v < N; ++v)
