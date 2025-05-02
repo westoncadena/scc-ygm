@@ -1,61 +1,144 @@
 #include <iostream>
 #include <ygm/comm.hpp>
-#include <ygm/container/bag.hpp>
+#include <ygm/container/map.hpp>
+#include <vector>
+#include <cereal/types/vector.hpp>
+#include <fstream>
+#include <string>
+#include <set>
 
-ygm::container::bag<std::pair<int, int>> ecl_scc_ygm(ygm::comm &world, int n, const ygm::container::bag<std::pair<int, int>> &edges)
-{
-    ygm::container::bag<int> vin(world);
-    ygm::container::bag<int> vout(world);
+struct VertexInfo {
+    std::vector<int> forward_edges;  
+    std::vector<int> backward_edges; 
+    int vin;                         
+    int vout;
 
-    bool converged = false;
-
-    while (!converged)
-    {
-        // Initialize vertex signatures
-        for (int v = 0; v < n; ++v)
-        {
-            vin.async_insert(v);
-            vout.async_insert(v);
-        }
+    template<class Archive>
+    void serialize(Archive & ar) {
+        ar(forward_edges, backward_edges, vin, vout);
     }
+};
+
+// Function to read edgelist file and create the vertex map
+ygm::container::map<int, VertexInfo> create_vertex_map(ygm::comm &world, const std::string& edgelist_file) {
+    ygm::container::map<int, VertexInfo> vertex_map(world);
+    std::set<int> vertices;
+
+    if (world.rank0()) {
+        std::cout << "Reading edges from " << edgelist_file << std::endl;
+        std::ifstream file(edgelist_file);
+        if (!file.is_open()) {
+            std::cerr << "Error: Could not open file " << edgelist_file << std::endl;
+            return vertex_map;
+        }
+
+        // First pass: collect all vertices
+        int src, dst;
+        while (file >> src >> dst) {
+            vertices.insert(src);
+            vertices.insert(dst);
+        }
+        file.clear();
+        file.seekg(0);
+
+        // Initialize vertex information
+        for (int v : vertices) {
+            VertexInfo info;
+            info.vin = v;
+            info.vout = v;
+            vertex_map.async_insert(v, info);
+        }
+
+        // Second pass: process edges
+        while (file >> src >> dst) {
+            auto update_edges = [](auto pmap, const int &vertex, VertexInfo &info, int src, int dst) {
+                if (vertex == src) {
+                    info.forward_edges.push_back(dst);
+                }
+                if (vertex == dst) {
+                    info.backward_edges.push_back(src);
+                }
+            };
+            vertex_map.async_visit(src, update_edges, src, dst);
+            vertex_map.async_visit(dst, update_edges, src, dst);
+        }
+        file.close();
+    }
+
+    world.barrier();
+    return vertex_map;
+}
+
+ygm::container::map<int, VertexInfo> ecl_scc_ygm(ygm::comm &world, const std::string& edgelist_file)
+{
+    // Create the vertex map from the edgelist file
+    auto vertex_map = create_vertex_map(world, edgelist_file);
+
+    // bool converged = false;
+    // while (!converged) {
+    //     // Process forward edges to update vout
+    //     vertex_map.for_all([&vertex_map](const int &vertex, VertexInfo &info) {
+    //         for (int neighbor : info.forward_edges) {
+    //             auto update_vout = [](auto pmap, const int &v, VertexInfo &vinfo, int new_vout) {
+    //                 if (vinfo.vout < new_vout) {
+    //                     vinfo.vout = new_vout;
+    //                 }
+    //             };
+    //             vertex_map.async_visit(neighbor, update_vout, info.vout);
+    //         }
+    //     });
+
+    //     // Process backward edges to update vin
+    //     vertex_map.for_all([&vertex_map](const int &vertex, VertexInfo &info) {
+    //         for (int neighbor : info.backward_edges) {
+    //             auto update_vin = [](auto pmap, const int &v, VertexInfo &vinfo, int new_vin) {
+    //                 if (vinfo.vin < new_vin) {
+    //                     vinfo.vin = new_vin;
+    //                 }
+    //             };
+    //             vertex_map.async_visit(neighbor, update_vin, info.vin);
+    //         }
+    //     });
+
+    //     world.barrier();
+
+    //     // Check for convergence
+    //     bool local_converged = true;
+    //     vertex_map.local_for_all([&local_converged](const int &vertex, VertexInfo &info) {
+    //         if (info.vin != info.vout) {
+    //             local_converged = false;
+    //         }
+    //     });
+
+    //     converged = world.all_reduce_min(local_converged);
+    // }
+
+    return vertex_map;
 }
 
 int main(int argc, char **argv)
 {
     ygm::comm world(&argc, &argv);
 
-    ygm::container::bag<std::pair<int, int>> bbag(world);
-
-    if (world.rank0())
-    {
-        std::cout << "Running parallel ECL-SCC algorithm on " << world.size() << " ranks" << std::endl;
-
-        bbag.async_insert(std::make_pair(2, 9));
-        bbag.async_insert(std::make_pair(9, 0));
-        bbag.async_insert(std::make_pair(0, 5));
-        bbag.async_insert(std::make_pair(5, 1));
-        bbag.async_insert(std::make_pair(3, 7));
-        bbag.async_insert(std::make_pair(3, 11));
-        bbag.async_insert(std::make_pair(7, 6));
-        bbag.async_insert(std::make_pair(7, 4));
-        bbag.async_insert(std::make_pair(6, 7));
-        bbag.async_insert(std::make_pair(4, 10));
-        bbag.async_insert(std::make_pair(10, 4));
-        bbag.async_insert(std::make_pair(8, 3));
-        bbag.async_insert(std::make_pair(8, 10));
-        bbag.async_insert(std::make_pair(11, 8));
-        bbag.async_insert(std::make_pair(11, 3));
+    if (argc != 2) {
+        if (world.rank0()) {
+            std::cerr << "Usage: " << argv[0] << " <edgelist_file>" << std::endl;
+        }
+        return 1;
     }
 
-    world.barrier();
+    std::string edgelist_file = argv[1];
 
-    for (int i = 0; i < world.size(); i++)
-    {
-        if (i == world.rank())
-        {
-            std::cout << "Rank " << i << std::endl;
-            bbag.local_for_all([](std::pair<int, int> &p)
-                               { std::cout << p.first << " " << p.second << std::endl; });
+    // Run the SCC algorithm
+    auto result = ecl_scc_ygm(world, edgelist_file);
+
+    // Print results
+    for (int i = 0; i < world.size(); i++) {
+        if (i == world.rank()) {
+            std::cout << "Rank " << i << " results:" << std::endl;
+            result.local_for_all([](const int &vertex, const VertexInfo &info) {
+                std::cout << "Vertex " << vertex << ": vin=" << info.vin << ", vout=" << info.vout << std::endl;
+            });
             std::cout << std::endl;
         }
         world.barrier();

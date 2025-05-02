@@ -14,19 +14,11 @@ find_package(MPI REQUIRED)
 
 #
 # Boost
-include(setup_boost)
-prepare_fetchcontent_boost()
-set(FETCHCONTENT_QUIET FALSE)
-FetchContent_Declare(
-        Boost
-        GIT_REPOSITORY https://github.com/boostorg/boost.git
-        GIT_TAG boost-1.78.0
-        GIT_SUBMODULES ${BOOST_REQD_SUBMODULES}
-        GIT_PROGRESS TRUE
-        CONFIGURE_COMMAND ""  # tell CMake it's not a cmake project
-)
-FetchContent_MakeAvailable(Boost)
-get_boost_include_dirs()
+# Use system-installed Boost
+set(Boost_NO_BOOST_CMAKE ON)  # Prevent CMake from expecting boost-cmake-config
+find_package(Boost 1.78.0 REQUIRED COMPONENTS json)
+
+include_directories(${Boost_INCLUDE_DIRS})
 
 
 set(DESIRED_YGM_VERSION 0.8)
@@ -34,7 +26,7 @@ find_package(ygm ${DESIRED_YGM_VERSION} CONFIG)
 if (NOT ygm_FOUND)
     FetchContent_Declare(
         ygm
-        GIT_REPOSITORY /home/westoncadena/llnl/ygm
+        GIT_REPOSITORY /Users/westoncadena/code/llnl/ygm
         GIT_TAG v0.8-dev
     )
     FetchContent_GetProperties(ygm)
@@ -57,7 +49,7 @@ function(setup_ygm_target exe_name)
 	add_executable(${exe_name} ${exe_name}.cpp)
 	target_link_libraries(${exe_name} PRIVATE ygm::ygm)
 	target_include_directories(${exe_name} PRIVATE "${PROJECT_SOURCE_DIR}/include")
-	target_include_directories(${exe_name} PRIVATE ${PROJECT_SOURCE_DIR}/include ${BOOST_INCLUDE_DIRS})
+	target_include_directories(${exe_name} PRIVATE ${PROJECT_SOURCE_DIR}/include ${Boost_INCLUDE_DIRS})
 	target_link_libraries(${exe_name} PRIVATE Boost::json)
 endfunction()
 
