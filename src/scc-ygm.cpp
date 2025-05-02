@@ -12,10 +12,11 @@ struct VertexInfo {
     std::vector<int> backward_edges; 
     int vin;                         
     int vout;
+    bool was_updated;  
 
     template<class Archive>
     void serialize(Archive & ar) {
-        ar(forward_edges, backward_edges, vin, vout);
+        ar(forward_edges, backward_edges, vin, vout, was_updated);
     }
 };
 
@@ -46,19 +47,20 @@ ygm::container::map<int, VertexInfo> create_vertex_map(ygm::comm &world, const s
             VertexInfo info;
             info.vin = v;
             info.vout = v;
+            info.was_updated = false;
             vertex_map.async_insert(v, info);
         }
 
         // Second pass: process edges
+        auto update_edges = [](auto pmap, const int &vertex, VertexInfo &info, int src, int dst) {
+            if (vertex == src) {
+                info.forward_edges.push_back(dst);
+            }
+            if (vertex == dst) {
+                info.backward_edges.push_back(src);
+            }
+        };
         while (file >> src >> dst) {
-            auto update_edges = [](auto pmap, const int &vertex, VertexInfo &info, int src, int dst) {
-                if (vertex == src) {
-                    info.forward_edges.push_back(dst);
-                }
-                if (vertex == dst) {
-                    info.backward_edges.push_back(src);
-                }
-            };
             vertex_map.async_visit(src, update_edges, src, dst);
             vertex_map.async_visit(dst, update_edges, src, dst);
         }
@@ -74,44 +76,90 @@ ygm::container::map<int, VertexInfo> ecl_scc_ygm(ygm::comm &world, const std::st
     // Create the vertex map from the edgelist file
     auto vertex_map = create_vertex_map(world, edgelist_file);
 
-    // bool converged = false;
-    // while (!converged) {
-    //     // Process forward edges to update vout
-    //     vertex_map.for_all([&vertex_map](const int &vertex, VertexInfo &info) {
-    //         for (int neighbor : info.forward_edges) {
-    //             auto update_vout = [](auto pmap, const int &v, VertexInfo &vinfo, int new_vout) {
-    //                 if (vinfo.vout < new_vout) {
-    //                     vinfo.vout = new_vout;
-    //                 }
-    //             };
-    //             vertex_map.async_visit(neighbor, update_vout, info.vout);
-    //         }
-    //     });
+    bool converged = false;
+    // For testing
+    int iteration = 0;  
 
-    //     // Process backward edges to update vin
-    //     vertex_map.for_all([&vertex_map](const int &vertex, VertexInfo &info) {
-    //         for (int neighbor : info.backward_edges) {
-    //             auto update_vin = [](auto pmap, const int &v, VertexInfo &vinfo, int new_vin) {
-    //                 if (vinfo.vin < new_vin) {
-    //                     vinfo.vin = new_vin;
-    //                 }
-    //             };
-    //             vertex_map.async_visit(neighbor, update_vin, info.vin);
-    //         }
-    //     });
+    while (!converged) {
+        // Initialize vertex signatures (vin and vout)
+        vertex_map.for_all([](const int &vertex, VertexInfo &info) {
+            info.vin = vertex;
+            info.vout = vertex;
+            info.was_updated = false;
+        });
+        world.barrier();
 
-    //     world.barrier();
+        // Propagate max values
+        bool updated = true;
+        // For testing
+        int prop_iteration = 0;
+        
+        while (updated) {
+            if (world.rank0()) {
+                std::cout << "Propagation iteration " << prop_iteration << std::endl;
+            }
 
-    //     // Check for convergence
-    //     bool local_converged = true;
-    //     vertex_map.local_for_all([&local_converged](const int &vertex, VertexInfo &info) {
-    //         if (info.vin != info.vout) {
-    //             local_converged = false;
-    //         }
-    //     });
+            // Reset update flags
+            vertex_map.for_all([](const int &vertex, VertexInfo &info) {
+                info.was_updated = false;
+            });
 
-    //     converged = world.all_reduce_min(local_converged);
-    // }
+            // update vout
+            auto update_vout = [](auto pmap, const int &v, VertexInfo &vinfo, int new_vout) {
+                if (vinfo.vout < new_vout) {
+                    vinfo.vout = new_vout;
+                    vinfo.was_updated = true;
+                }
+            };
+
+            // update vin  
+            auto update_vin = [](auto pmap, const int &v, VertexInfo &vinfo, int new_vin) {
+                if (vinfo.vin < new_vin) {
+                    vinfo.vin = new_vin;
+                    vinfo.was_updated = true;
+                }
+            };
+
+            // Process forward edges to update vout
+            vertex_map.for_all([&vertex_map, update_vout](const int &vertex, VertexInfo &info) {
+                for (int neighbor : info.forward_edges) {
+                    vertex_map.async_visit(neighbor, update_vout, info.vout);
+                }
+            });
+
+            // Process backward edges to update vin
+            vertex_map.for_all([&vertex_map, update_vin](const int &vertex, VertexInfo &info) {
+                for (int neighbor : info.backward_edges) {
+                    vertex_map.async_visit(neighbor, update_vin, info.vin);
+                }
+            });
+
+            world.barrier();
+
+            // Check if any values were updated
+            bool local_updated = false;
+            vertex_map.local_for_all([&local_updated](const int &vertex, VertexInfo &info) {
+                if (info.was_updated) {
+                    local_updated = true;
+                }
+            });
+
+            updated = world.all_reduce_max(local_updated);
+
+            prop_iteration++;
+            
+            // For testing: break after a few iterations
+            if (prop_iteration >= 10) {
+                if (world.rank0()) {
+                    std::cout << "Breaking after " << prop_iteration << " iterations" << std::endl;
+                }
+                break;
+            }
+        }
+
+        // Break after first main iteration for testing
+        break;
+    }
 
     return vertex_map;
 }
@@ -132,14 +180,16 @@ int main(int argc, char **argv)
     // Run the SCC algorithm
     auto result = ecl_scc_ygm(world, edgelist_file);
 
-    // Print results
+    // Print final results
+    if (world.rank0()) {
+        std::cout << "\nFinal results:" << std::endl;
+    }
+    
     for (int i = 0; i < world.size(); i++) {
         if (i == world.rank()) {
-            std::cout << "Rank " << i << " results:" << std::endl;
             result.local_for_all([](const int &vertex, const VertexInfo &info) {
                 std::cout << "Vertex " << vertex << ": vin=" << info.vin << ", vout=" << info.vout << std::endl;
             });
-            std::cout << std::endl;
         }
         world.barrier();
     }
