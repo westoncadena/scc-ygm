@@ -8,6 +8,7 @@
 #include <set>
 
 struct VertexInfo {
+    // CHANGE TO SETS RATHER THAN VECTORS
     std::vector<int> forward_edges;  
     std::vector<int> backward_edges; 
     int vin;                         
@@ -17,6 +18,17 @@ struct VertexInfo {
     template<class Archive>
     void serialize(Archive & ar) {
         ar(forward_edges, backward_edges, vin, vout, was_updated);
+    }
+};
+
+struct propogate_vin {
+    void operator()(auto& pmap, const int &v, VertexInfo &vinfo, int new_vin) {
+        if (vinfo.vin < new_vin){
+            vinfo.vin = new_vin;
+            for (int neighbor : vinfo.forward_edges){
+                vertex_map.async_visit(neighbor, propogate_vin(), new_vin);
+            }
+        }
     }
 };
 
@@ -85,9 +97,19 @@ ygm::container::map<int, VertexInfo> ecl_scc_ygm(ygm::comm &world, const std::st
         vertex_map.for_all([](const int &vertex, VertexInfo &info) {
             info.vin = vertex;
             info.vout = vertex;
-            info.was_updated = false;
         });
-        world.barrier();
+
+        vertex_map.for_all([](const int &vertex, VertexInfo &info) {
+            for (int neighbor : info.forward_edges){
+                vertex_map.async_visit(neighbor, propogate_vin(), info.vin);
+            }
+            // if (info.vin == vertex){
+                
+            // }
+            // if (info.vout == vertex){
+            //     // recursive async to propagate vout to neighbors
+            // }
+        });
 
         // Propagate max values
         bool updated = true;
