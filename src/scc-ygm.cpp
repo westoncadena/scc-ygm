@@ -3,30 +3,48 @@
 #include <ygm/container/map.hpp>
 #include <vector>
 #include <cereal/types/vector.hpp>
+#include <cereal/types/set.hpp>
 #include <fstream>
 #include <string>
 #include <set>
 
 struct VertexInfo {
-    // CHANGE TO SETS RATHER THAN VECTORS
-    std::vector<int> forward_edges;  
-    std::vector<int> backward_edges; 
+    std::set<int> forward_edges;  
+    std::set<int> backward_edges; 
     int vin;                         
     int vout;
-    bool was_updated;  
 
     template<class Archive>
     void serialize(Archive & ar) {
-        ar(forward_edges, backward_edges, vin, vout, was_updated);
+        ar(forward_edges, backward_edges, vin, vout);
     }
 };
 
-struct propogate_vin {
-    void operator()(auto& pmap, const int &v, VertexInfo &vinfo, int new_vin) {
-        if (vinfo.vin < new_vin){
-            vinfo.vin = new_vin;
-            for (int neighbor : vinfo.forward_edges){
-                vertex_map.async_visit(neighbor, propogate_vin(), new_vin);
+struct propagate_vin {
+    ygm::container::map<int, VertexInfo>* pmap;
+
+    propagate_vin(ygm::container::map<int, VertexInfo>* map) : pmap(map) {}
+
+    void operator()(const int &key, VertexInfo &value, int new_vin, int depth = 0) {
+        if (value.vin < new_vin) {
+            value.vin = new_vin;
+            for (int neighbor : value.forward_edges) {
+                pmap->async_visit(neighbor, propagate_vin(pmap), new_vin, depth + 1);
+            }
+        }
+    }
+};
+
+struct propagate_vout {
+    ygm::container::map<int, VertexInfo>* pmap;
+
+    propagate_vout(ygm::container::map<int, VertexInfo>* map) : pmap(map) {}
+
+    void operator()(const int &key, VertexInfo &value, int new_vout, int depth = 0) {
+        if (value.vout < new_vout) {
+            value.vout = new_vout;
+            for (int neighbor : value.backward_edges) {
+                pmap->async_visit(neighbor, propagate_vout(pmap), new_vout, depth + 1);
             }
         }
     }
@@ -59,17 +77,16 @@ ygm::container::map<int, VertexInfo> create_vertex_map(ygm::comm &world, const s
             VertexInfo info;
             info.vin = v;
             info.vout = v;
-            info.was_updated = false;
             vertex_map.async_insert(v, info);
         }
 
         // Second pass: process edges
         auto update_edges = [](auto pmap, const int &vertex, VertexInfo &info, int src, int dst) {
             if (vertex == src) {
-                info.forward_edges.push_back(dst);
+                info.forward_edges.insert(dst);
             }
             if (vertex == dst) {
-                info.backward_edges.push_back(src);
+                info.backward_edges.insert(src);
             }
         };
         while (file >> src >> dst) {
@@ -88,101 +105,23 @@ ygm::container::map<int, VertexInfo> ecl_scc_ygm(ygm::comm &world, const std::st
     // Create the vertex map from the edgelist file
     auto vertex_map = create_vertex_map(world, edgelist_file);
 
-    bool converged = false;
-    // For testing
-    int iteration = 0;  
+    // Initialize vertex signatures (vin and vout)
+    vertex_map.for_all([](const int &vertex, VertexInfo &info) {
+        info.vin = vertex;
+        info.vout = vertex;
+    });
 
-    while (!converged) {
-        // Initialize vertex signatures (vin and vout)
-        vertex_map.for_all([](const int &vertex, VertexInfo &info) {
-            info.vin = vertex;
-            info.vout = vertex;
-        });
-
-        vertex_map.for_all([](const int &vertex, VertexInfo &info) {
-            for (int neighbor : info.forward_edges){
-                vertex_map.async_visit(neighbor, propogate_vin(), info.vin);
-            }
-            // if (info.vin == vertex){
-                
-            // }
-            // if (info.vout == vertex){
-            //     // recursive async to propagate vout to neighbors
-            // }
-        });
-
-        // Propagate max values
-        bool updated = true;
-        // For testing
-        int prop_iteration = 0;
-        
-        while (updated) {
-            if (world.rank0()) {
-                std::cout << "Propagation iteration " << prop_iteration << std::endl;
-            }
-
-            // Reset update flags
-            vertex_map.for_all([](const int &vertex, VertexInfo &info) {
-                info.was_updated = false;
-            });
-
-            // update vout
-            auto update_vout = [](auto pmap, const int &v, VertexInfo &vinfo, int new_vout) {
-                if (vinfo.vout < new_vout) {
-                    vinfo.vout = new_vout;
-                    vinfo.was_updated = true;
-                }
-            };
-
-            // update vin  
-            auto update_vin = [](auto pmap, const int &v, VertexInfo &vinfo, int new_vin) {
-                if (vinfo.vin < new_vin) {
-                    vinfo.vin = new_vin;
-                    vinfo.was_updated = true;
-                }
-            };
-
-            // Process forward edges to update vout
-            vertex_map.for_all([&vertex_map, update_vout](const int &vertex, VertexInfo &info) {
-                for (int neighbor : info.forward_edges) {
-                    vertex_map.async_visit(neighbor, update_vout, info.vout);
-                }
-            });
-
-            // Process backward edges to update vin
-            vertex_map.for_all([&vertex_map, update_vin](const int &vertex, VertexInfo &info) {
-                for (int neighbor : info.backward_edges) {
-                    vertex_map.async_visit(neighbor, update_vin, info.vin);
-                }
-            });
-
-            world.barrier();
-
-            // Check if any values were updated
-            bool local_updated = false;
-            vertex_map.local_for_all([&local_updated](const int &vertex, VertexInfo &info) {
-                if (info.was_updated) {
-                    local_updated = true;
-                }
-            });
-
-            updated = world.all_reduce_max(local_updated);
-
-            prop_iteration++;
-            
-            // For testing: break after a few iterations
-            if (prop_iteration >= 10) {
-                if (world.rank0()) {
-                    std::cout << "Breaking after " << prop_iteration << " iterations" << std::endl;
-                }
-                break;
-            }
+    // Propagate values
+    vertex_map.for_all([&vertex_map](const int &vertex, VertexInfo &info) {
+        for (int neighbor : info.forward_edges) {
+            vertex_map.async_visit(neighbor, propagate_vin(&vertex_map), info.vin, 0);
         }
+        for (int neighbor : info.backward_edges) {
+            vertex_map.async_visit(neighbor, propagate_vout(&vertex_map), info.vout, 0);
+        }
+    });
 
-        // Break after first main iteration for testing
-        break;
-    }
-
+    world.barrier();
     return vertex_map;
 }
 
