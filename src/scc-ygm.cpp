@@ -7,6 +7,8 @@
 #include <fstream>
 #include <string>
 #include <set>
+#include <sstream>
+#include <map>
 
 struct VertexInfo {
     std::set<int> forward_edges;  
@@ -48,11 +50,11 @@ struct remove_forward_edges {
     template<typename Map>
     void operator()(ygm::ygm_ptr<Map> pmap, const int &key, VertexInfo &value, int vertex){
         size_t removed = value.forward_edges.erase(vertex);
-        if (removed > 0) {
-            std::cout << "Successfully removed forward edge " << key << " -> " << vertex << std::endl;
-        } else {
-            std::cout << "Failed to remove forward edge " << key << " -> " << vertex << " (edge not found)" << std::endl;
-        }
+        // if (removed > 0) {
+        //     std::cout << "Successfully removed forward edge " << key << " -> " << vertex << std::endl;
+        // } else {
+        //     std::cout << "Failed to remove forward edge " << key << " -> " << vertex << " (edge not found)" << std::endl;
+        // }
     }
 };
 
@@ -62,11 +64,11 @@ struct remove_edges {
     void operator()(ygm::ygm_ptr<Map> pmap, const int &key, VertexInfo &value, int vertex, int vin, int vout){
         if(vin != value.vin || vout != value.vout) {
             size_t removed = value.backward_edges.erase(vertex);
-            if (removed > 0) {
-                std::cout << "Successfully removed backward edge " << key << " -> " << vertex << std::endl;
-            } else {
-                std::cout << "Failed to remove backward ßedge " << key << " -> " << vertex << " (edge not found)" << std::endl;
-            }
+            // if (removed > 0) {
+            //     std::cout << "Successfully removed backward edge " << key << " -> " << vertex << std::endl;
+            // } else {
+            //     std::cout << "Failed to remove backward ßedge " << key << " -> " << vertex << " (edge not found)" << std::endl;
+            // }
             // remove the edge from the forward edges
             pmap->async_visit(vertex, remove_forward_edges(), key);
         }
@@ -88,10 +90,18 @@ ygm::container::map<int, VertexInfo> create_vertex_map(ygm::comm &world, const s
         }
 
         // First pass: collect all vertices
+        std::string line;
         int src, dst;
-        while (file >> src >> dst) {
-            vertices.insert(src);
-            vertices.insert(dst);
+        while (std::getline(file, line)) {
+            // Skip comment lines
+            if (line.empty() || line[0] == '#') {
+                continue;
+            }
+            std::istringstream iss(line);
+            if (iss >> src >> dst) {
+                vertices.insert(src);
+                vertices.insert(dst);
+            }
         }
         file.clear();
         file.seekg(0);
@@ -113,9 +123,17 @@ ygm::container::map<int, VertexInfo> create_vertex_map(ygm::comm &world, const s
                 info.backward_edges.insert(src);
             }
         };
-        while (file >> src >> dst) {
-            vertex_map.async_visit(src, update_edges, src, dst);
-            vertex_map.async_visit(dst, update_edges, src, dst);
+
+        while (std::getline(file, line)) {
+            // Skip comment lines
+            if (line.empty() || line[0] == '#') {
+                continue;
+            }
+            std::istringstream iss(line);
+            if (iss >> src >> dst) {
+                vertex_map.async_visit(src, update_edges, src, dst);
+                vertex_map.async_visit(dst, update_edges, src, dst);
+            }
         }
         file.close();
     }
@@ -149,7 +167,7 @@ void print_edges(ygm::container::map<int, VertexInfo>& vertex_map, ygm::comm& wo
 ygm::container::map<int, VertexInfo> ecl_scc_ygm(ygm::comm &world, const std::string& edgelist_file)
 {
     // Create the vertex map from the edgelist file
-    static auto vertex_map = create_vertex_map(world, edgelist_file);
+    auto vertex_map = create_vertex_map(world, edgelist_file);
 
     bool global_converged = false;
 
@@ -177,14 +195,14 @@ ygm::container::map<int, VertexInfo> ecl_scc_ygm(ygm::comm &world, const std::st
 
         world.barrier();
 
-        // Print edges before removal
-        if (world.rank0()) {
-            std::cout << "\nEdges before removal:" << std::endl;
-        }
+        // // Print edges before removal
+        // if (world.rank0()) {
+        //     std::cout << "\nEdges before removal:" << std::endl;
+        // }
 
-        print_edges(vertex_map, world);
+        // print_edges(vertex_map, world);
 
-        world.barrier();
+        // world.barrier();
 
         if (world.rank0()) {
             std::cout << "\nRemoving edges" << std::endl;
@@ -198,13 +216,13 @@ ygm::container::map<int, VertexInfo> ecl_scc_ygm(ygm::comm &world, const std::st
 
         world.barrier();
 
-        // Print edges after removal
-        if (world.rank0()) {
-            std::cout << "\nEdges after removal:" << std::endl;
-        }
-        print_edges(vertex_map, world);
+        // // Print edges after removal
+        // if (world.rank0()) {
+        //     std::cout << "\nEdges after removal:" << std::endl;
+        // }
+        // print_edges(vertex_map, world);
 
-        world.barrier();
+        // world.barrier();
 
         // check if for every vertex, vin == vout
         bool local_converged = true;
@@ -231,6 +249,51 @@ ygm::container::map<int, VertexInfo> ecl_scc_ygm(ygm::comm &world, const std::st
     return vertex_map;
 }
 
+// Print vertex information
+void print_results(ygm::container::map<int, VertexInfo>& vertex_map, ygm::comm& world) {
+    for (int i = 0; i < world.size(); i++) {
+        if (i == world.rank()) {
+            vertex_map.local_for_all([](const int &vertex, const VertexInfo &info) {
+                std::cout << "Vertex " << vertex << ": vin=" << info.vin << ", vout=" << info.vout << std::endl;
+            });
+        }
+        world.barrier();
+    }
+}
+
+// Count strongly connected components
+int count_sccs(ygm::container::map<int, VertexInfo>& vertex_map, ygm::comm& world) {
+    int local_count = 0;
+    vertex_map.local_for_all([&local_count](const int &vertex, const VertexInfo &info) {
+        if (info.vin == vertex && info.vout == vertex) {
+            local_count++;
+        }
+    });
+    
+    // Sum up counts from all processes
+    return world.all_reduce_sum(local_count);
+}
+
+// Count size of largest SCC
+int count_largest_scc(ygm::container::map<int, VertexInfo>& vertex_map, ygm::comm& world) {
+    // Create a distributed map to count vertices in each SCC
+    ygm::container::map<int, int> scc_sizes(world);
+    
+    // First, count vertices in each SCC
+    vertex_map.for_all([&scc_sizes](const int &vertex, const VertexInfo &info) {
+        scc_sizes.async_visit(info.vin, [](auto pmap, const int &scc_id, int &count) {
+            count++;
+        });
+    });
+    
+    int local_max = 0;
+    scc_sizes.for_all([&local_max](const int &scc_id, const int &size) {
+        local_max = std::max(local_max, size);
+    });
+    
+    return ygm::max(local_max, world);
+}
+
 int main(int argc, char **argv)
 {
     ygm::comm world(&argc, &argv);
@@ -247,19 +310,20 @@ int main(int argc, char **argv)
     // Run the SCC algorithm
     auto result = ecl_scc_ygm(world, edgelist_file);
 
-    // Print final results
+    // Count SCCs
+    int num_sccs = count_sccs(result, world);
     if (world.rank0()) {
-        std::cout << "\nFinal results:" << std::endl;
+        std::cout << "\nNumber of Strongly Connected Components: " << num_sccs << std::endl;
     }
-    
-    for (int i = 0; i < world.size(); i++) {
-        if (i == world.rank()) {
-            result.local_for_all([](const int &vertex, const VertexInfo &info) {
-                std::cout << "Vertex " << vertex << ": vin=" << info.vin << ", vout=" << info.vout << std::endl;
-            });
-        }
-        world.barrier();
+
+    // Count size of largest SCC
+    int largest_scc_size = count_largest_scc(result, world);
+    if (world.rank0()) {
+        std::cout << "Size of largest Strongly Connected Component: " << largest_scc_size << std::endl;
     }
+
+    // Print detailed results
+    // print_results(result, world);
 
     return 0;
 }
