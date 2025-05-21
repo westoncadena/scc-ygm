@@ -149,11 +149,12 @@ void print_edges(ygm::container::map<int, VertexInfo>& vertex_map, ygm::comm& wo
 ygm::container::map<int, VertexInfo> ecl_scc_ygm(ygm::comm &world, const std::string& edgelist_file)
 {
     // Create the vertex map from the edgelist file
-    auto vertex_map = create_vertex_map(world, edgelist_file);
+    static auto vertex_map = create_vertex_map(world, edgelist_file);
 
     bool global_converged = false;
 
     while (!global_converged) {
+
         // Initialize vertex signatures (vin and vout)
         vertex_map.for_all([](const int &vertex, VertexInfo &info) {
             info.vin = vertex;
@@ -205,7 +206,7 @@ ygm::container::map<int, VertexInfo> ecl_scc_ygm(ygm::comm &world, const std::st
 
         world.barrier();
 
-        // check if for every vertex, vin == vout, this means that the algorithm has converged
+        // check if for every vertex, vin == vout
         bool local_converged = true;
         vertex_map.local_for_all([&local_converged](const int &vertex, const VertexInfo &info) {
             if (info.vin != info.vout) {
@@ -213,6 +214,7 @@ ygm::container::map<int, VertexInfo> ecl_scc_ygm(ygm::comm &world, const std::st
             }
         });
 
+        
         global_converged = world.all_reduce_min(local_converged);
         
         if (world.rank0()) {
