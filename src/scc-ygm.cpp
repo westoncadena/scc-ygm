@@ -23,20 +23,6 @@ struct VertexInfo {
     }
 };
 
-struct remove_forward_edge {
-    template<typename Map>
-    void operator()(ygm::ygm_ptr<Map> pmap, const int &key, VertexInfo &value, int to){
-        value.forward_edges.erase(to);
-    }
-};
-
-struct remove_backward_edge {
-    template<typename Map>
-    void operator()(ygm::ygm_ptr<Map> pmap, const int &key, VertexInfo &value, int from){
-        value.backward_edges.erase(from);
-    }
-};
-
 // Function to read edgelist file and create the vertex map
 ygm::container::map<int, VertexInfo> create_vertex_map(ygm::comm &world, const std::string& edgelist_file) {
     ygm::container::map<int, VertexInfo> vertex_map(world);
@@ -177,6 +163,18 @@ ygm::container::map<int, VertexInfo> ecl_scc_ygm(ygm::comm &world, const std::st
                 p_vertex_map->async_visit(neighbor, collect_edges_to_remove(), vertex, info.vin, info.vout);
             }
         });
+
+        struct remove_forward_edge {
+            void operator()(const int &key, VertexInfo &value, int to){
+                value.forward_edges.erase(to);
+            }
+        };
+
+        struct remove_backward_edge {
+            void operator()(const int &key, VertexInfo &value, int from){
+                value.backward_edges.erase(from);
+            }
+        };
 
         // Second pass: remove the collected edges
         p_bag->for_all([](const std::pair<int,int>& edge) {
