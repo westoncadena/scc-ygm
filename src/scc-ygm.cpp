@@ -23,51 +23,6 @@ struct VertexInfo {
     }
 };
 
-struct propagate_vin {
-    template<typename Map>
-    void operator()(ygm::ygm_ptr<Map> pmap, const int &key, VertexInfo &value, int new_vin, int depth){
-        if (value.vin < new_vin){
-            value.vin = new_vin;
-            for (int neighbor : value.forward_edges) {
-                pmap->async_visit(neighbor, propagate_vin(), new_vin, depth + 1);
-            }
-        }
-    }
-};
-
-struct propagate_vout {
-    template<typename Map>
-    void operator()(ygm::ygm_ptr<Map> pmap, const int &key, VertexInfo &value, int new_vout, int depth){
-        if (value.vout < new_vout){
-            value.vout = new_vout;
-            for (int neighbor : value.backward_edges) {
-                pmap->async_visit(neighbor, propagate_vout(), new_vout, depth + 1);
-            }
-        }
-    }
-};
-
-struct remove_forward_edges {
-    template<typename Map>
-    void operator()(ygm::ygm_ptr<Map> pmap, const int &key, VertexInfo &value, int vertex){
-        size_t removed = value.forward_edges.erase(vertex);
-        // if (removed > 0) {
-        //     std::cout << "Successfully removed forward edge " << key << " -> " << vertex << std::endl;
-        // } else {
-        //     std::cout << "Failed to remove forward edge " << key << " -> " << vertex << " (edge not found)" << std::endl;
-        // }
-    }
-};
-
-struct collect_edges_to_remove {
-    template<typename Map>
-    void operator()(ygm::ygm_ptr<Map> pmap, const int &key, VertexInfo &value, int vertex, int vin, int vout, ygm::ygm_ptr<ygm::container::bag<std::pair<int,int>>> pbag){
-        if(vin != value.vin || vout != value.vout) {
-            pbag->async_insert({vertex, key});
-        }
-    }
-};
-
 struct remove_forward_edge {
     template<typename Map>
     void operator()(ygm::ygm_ptr<Map> pmap, const int &key, VertexInfo &value, int to){
@@ -148,58 +103,58 @@ ygm::container::map<int, VertexInfo> create_vertex_map(ygm::comm &world, const s
     return vertex_map;
 }
 
-// Function to print edges
-void print_edges(ygm::container::map<int, VertexInfo>& vertex_map, ygm::comm& world) {
-    for (int i = 0; i < world.size(); i++) {
-        if (i == world.rank()) {
-            vertex_map.local_for_all([](const int &vertex, const VertexInfo &info) {
-                std::cout << "Vertex " << vertex << " edges:" << std::endl;
-                std::cout << "  Forward edges: ";
-                for (int edge : info.forward_edges) {
-                    std::cout << edge << " ";
-                }
-                std::cout << std::endl;
-                std::cout << "  Backward edges: ";
-                for (int edge : info.backward_edges) {
-                    std::cout << edge << " ";
-                }
-                std::cout << std::endl;
-            });
-        }
-        world.barrier();
-    }
-}
 
 ygm::container::map<int, VertexInfo> ecl_scc_ygm(ygm::comm &world, const std::string& edgelist_file)
 {
     // Create the vertex map from the edgelist file
     auto vertex_map = create_vertex_map(world, edgelist_file);
+    static auto p_vertex_map = world.make_ygm_ptr(vertex_map);
 
     bool global_converged = false;
 
     while (!global_converged) {
 
         // Initialize vertex signatures (vin and vout)
-        vertex_map.for_all([](const int &vertex, VertexInfo &info) {
+        p_vertex_map->for_all([](const int &vertex, VertexInfo &info) {
             info.vin = vertex;
             info.vout = vertex;
         });
 
+        struct propagate_vin {
+            void operator()(const int &key, VertexInfo &value, int new_vin){
+                if (value.vin < new_vin){
+                    value.vin = new_vin;
+                    for (int neighbor : value.forward_edges) {
+                        p_vertex_map->async_visit(neighbor, propagate_vin(), new_vin);
+                    }
+                }
+            }
+        };
+
+        struct propagate_vout {
+            void operator()(const int &key, VertexInfo &value, int new_vout){
+                if (value.vout < new_vout){
+                    value.vout = new_vout;
+                    for (int neighbor : value.backward_edges) {
+                        p_vertex_map->async_visit(neighbor, propagate_vout(), new_vout);
+                    }
+                }
+            }
+        };
+
         // Propagate values
-        vertex_map.for_all([&vertex_map](const int &vertex, VertexInfo &info) {
+        p_vertex_map->for_all([](const int &vertex, VertexInfo &info) {
             if(vertex == info.vin) {
                 for (int neighbor : info.forward_edges) {
-                    vertex_map.async_visit(neighbor, propagate_vin(), info.vin, 0);
+                    p_vertex_map->async_visit(neighbor, propagate_vin(), info.vin);
                 }
             }
             if(vertex == info.vout) {
                 for (int neighbor : info.backward_edges) {
-                    vertex_map.async_visit(neighbor, propagate_vout(), info.vout, 0);
+                    p_vertex_map->async_visit(neighbor, propagate_vout(), info.vout);
                 }
             }
         });
-
-        world.barrier();
 
         if (world.rank0()) {
             std::cout << "\nRemoving edges" << std::endl;
@@ -207,27 +162,32 @@ ygm::container::map<int, VertexInfo> ecl_scc_ygm(ygm::comm &world, const std::st
 
         // First pass: collect edges to remove
         auto bag = ygm::container::bag<std::pair<int,int>>(world);
-        auto pbag = world.make_ygm_ptr(bag);
-        vertex_map.for_all([&vertex_map, pbag](const int &vertex, VertexInfo &info) {
+        static auto p_bag = world.make_ygm_ptr(bag);
+
+        struct collect_edges_to_remove {
+            void operator()(const int &key, VertexInfo &value, int vertex, int vin, int vout){
+                if(vin != value.vin || vout != value.vout) {
+                    p_bag->async_insert({vertex, key});
+                }
+            }
+        };
+
+        p_vertex_map->for_all([](const int &vertex, VertexInfo &info) {
             for (int neighbor : info.forward_edges) {
-                vertex_map.async_visit(neighbor, collect_edges_to_remove(), vertex, info.vin, info.vout, pbag);
+                p_vertex_map->async_visit(neighbor, collect_edges_to_remove(), vertex, info.vin, info.vout);
             }
         });
 
-        world.barrier();
-
         // Second pass: remove the collected edges
-        pbag->for_all([&vertex_map](const std::pair<int,int>& edge) {
+        p_bag->for_all([](const std::pair<int,int>& edge) {
             const auto& [from, to] = edge;
-            vertex_map.async_visit(from, remove_forward_edge(), to);
-            vertex_map.async_visit(to, remove_backward_edge(), from);
+            p_vertex_map->async_visit(from, remove_forward_edge(), to);
+            p_vertex_map->async_visit(to, remove_backward_edge(), from);
         });
-
-        world.barrier();
 
         // check if for every vertex, vin == vout
         bool local_converged = true;
-        vertex_map.local_for_all([&local_converged](const int &vertex, const VertexInfo &info) {
+        p_vertex_map->local_for_all([&local_converged](const int &vertex, const VertexInfo &info) {
             if (info.vin != info.vout) {
                 local_converged = false;
             }
@@ -244,7 +204,6 @@ ygm::container::map<int, VertexInfo> ecl_scc_ygm(ygm::comm &world, const std::st
             }
         }
 
-        world.barrier();
     }
 
     return vertex_map;
