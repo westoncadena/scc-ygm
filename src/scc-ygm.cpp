@@ -94,7 +94,7 @@ ygm::container::map<int, VertexInfo> ecl_scc_ygm(ygm::comm &world, const std::st
 {
     // Create the vertex map from the edgelist file
     auto vertex_map = create_vertex_map(world, edgelist_file);
-    static auto p_vertex_map = world.make_ygm_ptr(vertex_map);
+    static auto p_vertex_map = &vertex_map;
 
     bool global_converged = false;
 
@@ -148,7 +148,7 @@ ygm::container::map<int, VertexInfo> ecl_scc_ygm(ygm::comm &world, const std::st
 
         // First pass: collect edges to remove
         auto bag = ygm::container::bag<std::pair<int,int>>(world);
-        static auto p_bag = world.make_ygm_ptr(bag);
+        static auto p_bag = &bag;
 
         struct collect_edges_to_remove {
             void operator()(const int &key, VertexInfo &value, int vertex, int vin, int vout){
