@@ -2,6 +2,7 @@
 #include <ygm/comm.hpp>
 #include <ygm/container/map.hpp>
 #include <ygm/container/bag.hpp>
+#include <ygm/io/line_parser.hpp>
 #include <vector>
 #include <cereal/types/vector.hpp>
 #include <cereal/types/set.hpp>
@@ -17,79 +18,56 @@ struct VertexInfo {
     int vin;                         
     int vout;
 
+    VertexInfo() : vin(0), vout(0) {}
+    VertexInfo(int v) : vin(v), vout(v) {}
+
     template<class Archive>
     void serialize(Archive & ar) {
         ar(forward_edges, backward_edges, vin, vout);
     }
 };
 
-// Function to read edgelist file and create the vertex map
+// Function to read edgelist file and create the vertex map using parallel I/O
 ygm::container::map<int, VertexInfo> create_vertex_map(ygm::comm &world, const std::string& edgelist_file) {
     ygm::container::map<int, VertexInfo> vertex_map(world);
-    std::set<int> vertices;
-
+    
     if (world.rank0()) {
-        std::cout << "Reading edges from " << edgelist_file << std::endl;
-        std::ifstream file(edgelist_file);
-        if (!file.is_open()) {
-            std::cerr << "Error: Could not open file " << edgelist_file << std::endl;
-            return vertex_map;
-        }
-
-        // First pass: collect all vertices
-        std::string line;
-        int src, dst;
-        while (std::getline(file, line)) {
-            // Skip comment lines
-            if (line.empty() || line[0] == '#') {
-                continue;
-            }
-            std::istringstream iss(line);
-            if (iss >> src >> dst) {
-                vertices.insert(src);
-                vertices.insert(dst);
-            }
-        }
-        file.clear();
-        file.seekg(0);
-
-        // Initialize vertex information
-        for (int v : vertices) {
-            VertexInfo info;
-            info.vin = v;
-            info.vout = v;
-            vertex_map.async_insert(v, info);
-        }
-
-        // Second pass: process edges
-        auto update_edges = [](auto pmap, const int &vertex, VertexInfo &info, int src, int dst) {
-            if (vertex == src) {
-                info.forward_edges.insert(dst);
-            }
-            if (vertex == dst) {
-                info.backward_edges.insert(src);
-            }
-        };
-
-        while (std::getline(file, line)) {
-            // Skip comment lines
-            if (line.empty() || line[0] == '#') {
-                continue;
-            }
-            std::istringstream iss(line);
-            if (iss >> src >> dst) {
-                vertex_map.async_visit(src, update_edges, src, dst);
-                vertex_map.async_visit(dst, update_edges, src, dst);
-            }
-        }
-        file.close();
+        std::cout << "Reading edges from " << edgelist_file << " using parallel I/O" << std::endl;
     }
 
-    world.barrier();
+    // Create line parser for the edge list file
+    ygm::io::line_parser lp(world, {edgelist_file});
+    
+    // Single pass: process edges and build adjacency lists
+    lp.for_all([&vertex_map](const std::string& line) {
+        // Skip comment lines and empty lines
+        if (line.empty() || line[0] == '#') {
+            return;
+        }
+        
+        std::istringstream iss(line);
+        int src, dst;
+        if (iss >> src >> dst) {
+            auto process_edge = [src, dst](auto pmap, const int& vertex, VertexInfo& info) {
+                if (vertex == src) {
+                    info.forward_edges.insert(dst);
+                }
+                if (vertex == dst) {
+                    info.backward_edges.insert(src);
+                }
+            };
+            
+            vertex_map.async_insert(src, VertexInfo{src});
+            vertex_map.async_insert(dst, VertexInfo{dst});
+            vertex_map.async_visit(src, process_edge);
+            vertex_map.async_visit(dst, process_edge);
+        }
+    });
+    
     return vertex_map;
 }
 
-
+// SCC algorithm using YGM
 ygm::container::map<int, VertexInfo> ecl_scc_ygm(ygm::comm &world, const std::string& edgelist_file)
 {
     // Create the vertex map from the edgelist file
