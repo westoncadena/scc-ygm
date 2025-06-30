@@ -26,6 +26,10 @@ This implementation is based on the algorithm described in the paper:
 ## Building Your Code
 After your executable has been added to the CMake setup, it can be built by running
 ```
+# If on Ruby
+module load cmake/3.30.5 gcc/13.3.1
+
+############
 mkdir build
 cd build
 cmake ..
