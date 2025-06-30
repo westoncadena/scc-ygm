@@ -125,6 +125,19 @@ function(add_ygm_executable name)
     setup_ygm_target(${name})
 endfunction()
 
+function(setup_ygm_target_old exe_name)
+	# First argument is the executable name, rest are additional source files
+	set(SOURCES ${exe_name}.cpp)
+	foreach(ARG ${ARGN})
+		list(APPEND SOURCES ${ARG})
+	endforeach()
+	
+	add_executable(${exe_name} ${SOURCES})
+	target_link_libraries(${exe_name} PRIVATE ygm::ygm)
+	target_include_directories(${exe_name} PRIVATE ${PROJECT_SOURCE_DIR}/include ${Boost_INCLUDE_DIRS})
+	target_link_libraries(${exe_name} PRIVATE Boost::json)
+endfunction()
+
 add_subdirectory(src)
 
 #
