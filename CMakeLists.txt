@@ -82,6 +82,9 @@ function(add_common_compile_options name)
     # Common
     #target_compile_options(${name} PRIVATE -Wall -Wextra -pedantic)
 
+    # Suppress YGM internal warnings
+    target_compile_options(${name} PRIVATE -Wno-ignored-reference-qualifiers)
+
     # Debug
     target_compile_options(${name} PRIVATE $<$<CONFIG:Debug>:-O0>)
     target_compile_options(${name} PRIVATE $<$<CONFIG:Debug>:-g3>)

@@ -1,3 +1,5 @@
+#include <ygm/comm.hpp>
+#include <ygm/detail/collective.hpp>
 #include "scc/scc.hpp"
 #include "scc/graph.hpp"
 #include <iostream>

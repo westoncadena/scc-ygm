@@ -3,6 +3,7 @@
 #include <ygm/container/map.hpp>
 #include <ygm/comm.hpp>
 #include <ygm/io/line_parser.hpp>
+#include <ygm/detail/collective.hpp>
 #include <sstream>
 #include <iostream>
 

@@ -1,6 +1,7 @@
 #pragma once
 #include <ygm/container/bag.hpp>
 #include <ygm/container/map.hpp>
+#include <ygm/detail/collective.hpp>
 #include <algorithm>
 #include <iostream>
 #include "scc/graph.hpp"
@@ -87,7 +88,7 @@ inline void ecl_scc_ygm(ygm::comm &world, const std::string& edgelist_file, ygm:
                 local_converged = false;
             }
         });
-        global_converged = world.all_reduce_min(local_converged);
+        global_converged = ygm::min(local_converged, world);
         if (world.rank0()) {
             if (global_converged) {
                 std::cout << "\nAlgorithm has converged - all vertices have matching vin and vout values" << std::endl;
@@ -116,7 +117,7 @@ inline int count_sccs(ygm::container::map<int, VertexInfo>& vertex_map, ygm::com
             local_count++;
         }
     });
-    return world.all_reduce_sum(local_count);
+    return ygm::sum(local_count, world);
 }
 
 inline int count_largest_scc(ygm::container::map<int, VertexInfo>& vertex_map, ygm::comm& world) {

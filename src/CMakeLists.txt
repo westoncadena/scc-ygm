@@ -3,7 +3,6 @@
 #
 # SPDX-License-Identifier: MIT
 
-add_ygm_executable(read_json_example)
 add_ygm_executable(scc-sequential)
 add_ygm_executable(scc-ygm-together)
 add_ygm_executable(scc-ygm-headers)
