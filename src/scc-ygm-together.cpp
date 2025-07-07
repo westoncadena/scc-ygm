@@ -13,10 +13,6 @@
 #include <sstream>
 #include <map>
 
-// Suppress warnings from YGM internal headers
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wignored-reference-qualifiers"
-
 struct VertexInfo {
     std::set<int> forward_edges;  
     std::set<int> backward_edges; 
