@@ -1,14 +1,57 @@
-#include "scc/scc.hpp"
-#include <ygm/container/bag.hpp>
-#include <algorithm>
+#include <set>
+#include <sstream>
 #include <iostream>
+#include <algorithm>
+#include <ygm/comm.hpp>
+#include <ygm/container/bag.hpp>
+#include <ygm/container/map.hpp>
+#include <ygm/io/line_parser.hpp>
 
-namespace scc {
+struct VertexInfo {
+    std::set<int> forward_edges;
+    std::set<int> backward_edges;
+    int vin;
+    int vout;
+    VertexInfo() : vin(0), vout(0) {}
+    VertexInfo(int v) : vin(v), vout(v) {}
+    template<class Archive>
+    void serialize(Archive & ar) {
+        ar(forward_edges, backward_edges, vin, vout);
+    }
+};
 
-ygm::container::map<int, VertexInfo> ecl_scc_ygm(ygm::comm &world, const std::string& edgelist_file)
+inline void create_vertex_map(ygm::comm &world, const std::string& edgelist_file, ygm::container::map<int, VertexInfo>& vertex_map) {
+    if (world.rank0()) {
+        std::cout << "Reading edges from " << edgelist_file << " using parallel I/O" << std::endl;
+    }
+    ygm::io::line_parser lp(world, {edgelist_file});
+    lp.for_all([&vertex_map](const std::string& line) {
+        if (line.empty() || line[0] == '#') {
+            return;
+        }
+        std::istringstream iss(line);
+        int src, dst;
+        if (iss >> src >> dst) {
+            auto process_edge = [src, dst](auto pmap, const int& vertex, VertexInfo& info) {
+                if (vertex == src) {
+                    info.forward_edges.insert(dst);
+                }
+                if (vertex == dst) {
+                    info.backward_edges.insert(src);
+                }
+            };
+            vertex_map.async_insert(src, VertexInfo{src}); 
+            vertex_map.async_insert(dst, VertexInfo{dst});
+            vertex_map.async_visit(src, process_edge);
+            vertex_map.async_visit(dst, process_edge);
+        }
+    });
+}
+
+inline void ecl_scc_ygm(ygm::comm &world, const std::string& edgelist_file, ygm::container::map<int, VertexInfo>& vertex_map)
 {
-    auto vertex_map = create_vertex_map(world, edgelist_file);
-    static auto p_vertex_map = &vertex_map;
+    create_vertex_map(world, edgelist_file, vertex_map);
+    auto p_vertex_map = &vertex_map;
     bool global_converged = false;
     while (!global_converged) {
         p_vertex_map->for_all([](const int &vertex, VertexInfo &info) {
@@ -94,10 +137,9 @@ ygm::container::map<int, VertexInfo> ecl_scc_ygm(ygm::comm &world, const std::st
             }
         }
     }
-    return vertex_map;
 }
 
-void print_results(ygm::container::map<int, VertexInfo>& vertex_map, ygm::comm& world) {
+inline void print_results(ygm::container::map<int, VertexInfo>& vertex_map, ygm::comm& world) {
     for (int i = 0; i < world.size(); i++) {
         if (i == world.rank()) {
             vertex_map.local_for_all([](const int &vertex, const VertexInfo &info) {
@@ -108,7 +150,7 @@ void print_results(ygm::container::map<int, VertexInfo>& vertex_map, ygm::comm& 
     }
 }
 
-int count_sccs(ygm::container::map<int, VertexInfo>& vertex_map, ygm::comm& world) {
+inline int count_sccs(ygm::container::map<int, VertexInfo>& vertex_map, ygm::comm& world) {
     int local_count = 0;
     vertex_map.local_for_all([&local_count](const int &vertex, const VertexInfo &info) {
         if (info.vin == vertex && info.vout == vertex) {
@@ -118,7 +160,7 @@ int count_sccs(ygm::container::map<int, VertexInfo>& vertex_map, ygm::comm& worl
     return world.all_reduce_sum(local_count);
 }
 
-int count_largest_scc(ygm::container::map<int, VertexInfo>& vertex_map, ygm::comm& world) {
+inline int count_largest_scc(ygm::container::map<int, VertexInfo>& vertex_map, ygm::comm& world) {
     ygm::container::map<int, int> scc_sizes(world);
     vertex_map.for_all([&scc_sizes](const int &vertex, const VertexInfo &info) {
         scc_sizes.async_visit(info.vin, [](auto pmap, const int &scc_id, int &count) {
@@ -132,4 +174,37 @@ int count_largest_scc(ygm::container::map<int, VertexInfo>& vertex_map, ygm::com
     return ygm::max(local_max, world);
 }
 
-} // namespace scc 
+int main(int argc, char **argv)
+{
+    ygm::comm world(&argc, &argv);
+
+    if (argc != 2) {
+        if (world.rank0()) {
+            std::cerr << "Usage: " << argv[0] << " <edgelist_file>" << std::endl;
+        }
+        return 1;
+    }
+
+    std::string edgelist_file = argv[1];
+
+    // Run the SCC algorithm
+    ygm::container::map<int, VertexInfo> result(world);
+    ecl_scc_ygm(world, edgelist_file, result);
+
+    // Count SCCs
+    int num_sccs = count_sccs(result, world);
+    if (world.rank0()) {
+        std::cout << "\nNumber of Strongly Connected Components: " << num_sccs << std::endl;
+    }
+
+    // Count size of largest SCC
+    int largest_scc_size = count_largest_scc(result, world);
+    if (world.rank0()) {
+        std::cout << "Size of largest Strongly Connected Component: " << largest_scc_size << std::endl;
+    }
+
+    // Print detailed results
+    // print_results(result, world);
+
+    return 0;
+}

@@ -1,4 +1,5 @@
 #include "scc/scc.hpp"
+#include "scc/graph.hpp"
 #include <iostream>
 
 int main(int argc, char **argv)
@@ -15,7 +16,8 @@ int main(int argc, char **argv)
     std::string edgelist_file = argv[1];
 
     // Run the SCC algorithm
-    auto result = scc::ecl_scc_ygm(world, edgelist_file);
+    ygm::container::map<int, scc::VertexInfo> result(world);
+    scc::ecl_scc_ygm(world, edgelist_file, result);
 
     // Count SCCs
     int num_sccs = scc::count_sccs(result, world);

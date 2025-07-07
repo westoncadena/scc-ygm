@@ -5,6 +5,6 @@
 
 add_ygm_executable(read_json_example)
 add_ygm_executable(scc-sequential)
-
-setup_ygm_target_old(scc-ygm graph.cpp scc.cpp)
+add_ygm_executable(scc-ygm-together)
+add_ygm_executable(scc-ygm-headers)
 
