@@ -6,4 +6,5 @@
 add_ygm_executable(scc-sequential)
 add_ygm_executable(scc-ygm-together)
 add_ygm_executable(scc-ygm-headers)
+add_ygm_executable(multi-io)
 
